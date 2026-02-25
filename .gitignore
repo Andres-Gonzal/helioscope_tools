@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+*.xlsx
+*.csv
+*.log
+.DS_Store
