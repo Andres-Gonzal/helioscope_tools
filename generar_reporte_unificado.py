@@ -142,11 +142,23 @@ def _extract_project_name(lines: Sequence[str], pdf: Path, warnings: List[str]) 
                 if candidate:
                     return _normalise_project_name(candidate)
             break
+
+    # Formato alterno (p. ej. reportes con bloque "Project Details"):
+    # se usa el valor inmediato del campo "Design" como nombre del proyecto.
+    for idx, line in enumerate(lines):
+        if line.strip().lower() == "design":
+            for next_line in lines[idx + 1 : idx + 8]:
+                candidate = next_line.strip()
+                if candidate and candidate.lower() not in {"owner", "location", "project details"}:
+                    return _normalise_project_name(candidate)
+            break
+
     warnings.append(f"No se pudo detectar el nombre del proyecto en {pdf}")
     return _normalise_project_name(pdf.stem)
 
 
 def _extract_coordinates(lines: Sequence[str], pdf: Path, warnings: List[str]) -> str | None:
+    # Formato clásico ("Project Address")
     for idx, line in enumerate(lines):
         label = line.strip().lower()
         if label == "project address" or (
@@ -165,6 +177,20 @@ def _extract_coordinates(lines: Sequence[str], pdf: Path, warnings: List[str]) -
                     return f"{coords[0]}, {coords[1]}"
             warnings.append(f"No se pudieron leer coordenadas en {pdf}")
             return None
+
+    # Formato alterno: bloque con "Project Location" y línea "Location" seguida de "(lat, lon)".
+    for idx, line in enumerate(lines):
+        if line.strip().lower() != "location":
+            continue
+        for candidate in lines[idx + 1 : idx + 6]:
+            text = candidate.strip()
+            if not text:
+                continue
+            if "(" in text and "," in text and ")" in text:
+                nums = re.findall(r"-?\d+(?:\.\d+)?", text)
+                if len(nums) >= 2:
+                    return f"{float(nums[0])}, {float(nums[1])}"
+        break
     return None
 
 
@@ -238,7 +264,7 @@ def _slice_component_table(lines: Sequence[str]) -> Sequence[str]:
     for idx, line in enumerate(lines):
         if line.strip() == "Component":
             context = "".join(lines[max(0, idx - 5) : idx + 1])
-            if "Components" in context:
+            if "Components" in context or "Design BOM" in context:
                 table_start = idx
                 break
     if table_start is None:
@@ -247,7 +273,13 @@ def _slice_component_table(lines: Sequence[str]) -> Sequence[str]:
     table = list(lines[table_start:])
     for idx, line in enumerate(table):
         stripped = line.strip()
-        if stripped.startswith("© 2025") or "Detailed Layout" in stripped:
+        if (
+            stripped.startswith("© 2025")
+            or "Detailed Layout" in stripped
+            or stripped.startswith("Month")
+            or stripped.startswith("Design Wiring Zone")
+            or stripped.startswith("Design Render")
+        ):
             return table[:idx]
     return table
 
@@ -324,6 +356,96 @@ def _normalise_blocks(blocks: Sequence[str], pdf: Path, warnings: List[str]) -> 
     return normalised
 
 
+def _extract_fallback_equipment_name(lines: Sequence[str], kind: str) -> str:
+    kind_lower = kind.lower()
+    if kind_lower == "module":
+        for idx, line in enumerate(lines):
+            if line.strip().lower() != "module":
+                continue
+            parts: List[str] = []
+            for candidate in lines[idx + 1 : idx + 10]:
+                t = " ".join(candidate.split()).strip()
+                if not t:
+                    continue
+                low = t.lower()
+                if any(token in low for token in ("spec sheet", "characterization", "true", "inverter", "type", "component")):
+                    break
+                parts.append(t)
+            if parts:
+                candidate_name = " ".join(parts)
+                if re.search(r"\d", candidate_name) and "(" in candidate_name:
+                    return candidate_name
+
+        pattern_power = re.compile(r"\(\d+(?:\.\d+)?\s*W\)", re.IGNORECASE)
+        for idx, line in enumerate(lines):
+            text = " ".join(line.split()).strip()
+            if not text:
+                continue
+            if "kw" in text.lower():
+                continue
+            if "solar" not in text.lower() and "module" in text.lower():
+                continue
+            if pattern_power.search(text):
+                if re.search(r"[A-Za-z].*[A-Za-z]", text):
+                    return text
+                prev = []
+                for candidate in reversed(lines[max(0, idx - 6) : idx]):
+                    t = " ".join(candidate.split()).strip()
+                    if not t:
+                        continue
+                    if any(x in t.lower() for x in ("module", "spec sheet", "characterization", "type", "component")):
+                        continue
+                    prev.append(t)
+                    if len(prev) >= 3:
+                        break
+                if prev:
+                    name = " ".join(reversed(prev + [text]))
+                    return " ".join(name.split())
+    if kind_lower == "inverter":
+        for idx, line in enumerate(lines):
+            if line.strip().lower() != "inverter":
+                continue
+            parts: List[str] = []
+            for candidate in lines[idx + 1 : idx + 12]:
+                t = candidate.strip()
+                if not t:
+                    continue
+                low = t.lower()
+                if any(
+                    token in low
+                    for token in (
+                        "spec sheet",
+                        "characterization",
+                        "n/a",
+                        "true",
+                        "module",
+                        "system",
+                        "shading",
+                        "wiring",
+                        "mismatch",
+                        "reflection",
+                        "soiling",
+                    )
+                ):
+                    break
+                if re.search(r"\d+(?:\.\d+)?\s*%", t):
+                    break
+                if "kwh" in low:
+                    break
+                parts.append(t)
+            if parts:
+                candidate_name = " ".join(parts).strip()
+                # Debe parecer nombre de modelo real, no etiqueta aislada.
+                if (
+                    len(candidate_name) > 6
+                    and re.search(r"\d", candidate_name)
+                    and ("(" in candidate_name or "-" in candidate_name)
+                    and candidate_name.lower() not in {"inverter", "inverter:"}
+                ):
+                    return candidate_name
+    return ""
+
+
 def _extract_concentrado_row(pdf: Path, warnings: List[str]) -> dict | None:
     try:
         lines = _run_pdftotext(pdf)
@@ -367,16 +489,25 @@ def _extract_concentrado_row(pdf: Path, warnings: List[str]) -> dict | None:
 
     inverters = _normalise_blocks(_collect_blocks(table_lines, "Inverters", STOP_INVERTERS), pdf, warnings)
     modules = _normalise_blocks(_collect_blocks(table_lines, "Module", STOP_MODULES), pdf, warnings)
+    if not modules:
+        modules = _normalise_blocks(_collect_blocks(table_lines, "Modules", STOP_MODULES), pdf, warnings)
+
+    inverter_names = "; ".join(entry["name"] for entry in inverters if entry["name"])
+    module_names = "; ".join(entry["name"] for entry in modules if entry["name"])
+    if not inverter_names:
+        inverter_names = _extract_fallback_equipment_name(lines, "inverter")
+    if not module_names:
+        module_names = _extract_fallback_equipment_name(lines, "module")
 
     return {
         "Project Name": project_name,
         "Capacity (kWp)": capacity_kwp,
         "Project Coordinates": coordinates,
         "Installation Types": installation_types,
-        "Inverter Names": "; ".join(entry["name"] for entry in inverters if entry["name"]),
+        "Inverter Names": inverter_names,
         "Inverter Counts": "; ".join(entry["count_text"] for entry in inverters if entry["count_text"]),
         "Total Inverters": sum(entry["count"] for entry in inverters if entry["count"] is not None),
-        "Module Names": "; ".join(entry["name"] for entry in modules if entry["name"]),
+        "Module Names": module_names,
         "Module Counts": "; ".join(entry["count_text"] for entry in modules if entry["count_text"]),
         "Total Modules": sum(entry["count"] for entry in modules if entry["count"] is not None),
         "PDF Path": str(pdf),
