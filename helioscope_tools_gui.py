@@ -46,10 +46,25 @@ class HelioscopeToolsGUI:
         pdf_frame.pack(fill="x", pady=(10, 0))
 
         self.unified_prefix_var = tk.StringVar(value="helioscope_unificado")
+        self.sort_options = {
+            "Project Name (A-Z)": "project_name_asc",
+            "Project Name (Z-A)": "project_name_desc",
+            "Ruta PDF (A-Z)": "pdf_path_asc",
+            "Sin ordenar": "none",
+        }
+        self.sort_label_var = tk.StringVar(value="Project Name (A-Z)")
         ttk.Label(pdf_frame, text="Nombre de salida (sin .xlsx):").grid(row=0, column=0, sticky="w")
         ttk.Entry(pdf_frame, textvariable=self.unified_prefix_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
         self.btn_run_unified = ttk.Button(pdf_frame, text="Generar reporte unificado", command=self._run_unified)
         self.btn_run_unified.grid(row=1, column=1, sticky="ew")
+        ttk.Label(pdf_frame, text="Orden en consolidado:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.sort_combo = ttk.Combobox(
+            pdf_frame,
+            textvariable=self.sort_label_var,
+            values=list(self.sort_options.keys()),
+            state="readonly",
+        )
+        self.sort_combo.grid(row=3, column=0, sticky="ew", padx=(0, 8))
         pdf_frame.columnconfigure(0, weight=1)
 
         csv_frame = ttk.LabelFrame(main, text="2) Unificar CSVs por carpeta", padding=10)
@@ -111,7 +126,17 @@ class HelioscopeToolsGUI:
             return
 
         script = self.base_dir / "generar_reporte_unificado.py"
-        cmd = [self.python_exe, str(script), "--root", str(root_path), "--out-prefix", prefix]
+        sort_by = self.sort_options.get(self.sort_label_var.get(), "project_name_asc")
+        cmd = [
+            self.python_exe,
+            str(script),
+            "--root",
+            str(root_path),
+            "--out-prefix",
+            prefix,
+            "--sort-by",
+            sort_by,
+        ]
         self._start_command(cmd, root_path)
 
     def _run_csv(self) -> None:

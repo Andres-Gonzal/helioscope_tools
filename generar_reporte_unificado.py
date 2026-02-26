@@ -60,26 +60,6 @@ IGNORED_NAME_KEYWORDS = {
 }
 IGNORED_CHARS = set("0123456789-./°")
 
-DESIRED_ORDER = [
-    "Suburbia Lindavista",
-    "Suburbia Torres Lindavista",
-    "Suburbia Toluca Gran Plaza",
-    "Suburbia Ermita Iztapalapa",
-    "Suburbia Coacalco",
-    "Suburbia Puerta Texcoco",
-    "Suburbia Ciudad Victoria",
-    "Suburbia Monterrey Santa Catarina",
-    "Suburbia Cuautitlán Centella",
-    "Suburbia Paseo Gomez Palacio",
-    "Suburbia Tuxtepec",
-    "Suburbia Monterrey Paseo Juarez",
-    "Suburbia Tizayuca Tizara",
-    "Suburbia Campeche",
-    "Suburbia Los Reyes Tepozan",
-]
-ORDER_INDEX = {name: idx for idx, name in enumerate(DESIRED_ORDER)}
-
-
 @dataclass(frozen=True)
 class TemperatureModelRow:
     rack_type: str
@@ -601,7 +581,7 @@ def build_ghi_concentrado(root: Path) -> Tuple[pd.DataFrame, List[str]]:
             rows.append(data)
     if not rows:
         raise RuntimeError("No se pudo extraer información de los PDFs")
-    rows.sort(key=lambda row: (ORDER_INDEX.get(row["Project Name"], len(DESIRED_ORDER)), row["Project Name"]))
+    rows.sort(key=lambda row: (str(row.get("Project Name") or ""), str(row.get("PDF Path") or "")))
     return pd.DataFrame(rows), warnings
 
 
@@ -879,7 +859,24 @@ def _build_temperature_for_installation(merged: pd.DataFrame, temp_df: pd.DataFr
     return merged
 
 
-def build_unified_report(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+def _sort_merged(merged: pd.DataFrame, sort_by: str) -> pd.DataFrame:
+    if merged.empty or sort_by == "none":
+        return merged
+
+    if sort_by == "project_name_asc":
+        return merged.sort_values(by=["Project Name", "PDF Path"], na_position="last").reset_index(drop=True)
+    if sort_by == "project_name_desc":
+        return merged.sort_values(
+            by=["Project Name", "PDF Path"],
+            ascending=[False, True],
+            na_position="last",
+        ).reset_index(drop=True)
+    if sort_by == "pdf_path_asc":
+        return merged.sort_values(by=["PDF Path"], na_position="last").reset_index(drop=True)
+    return merged
+
+
+def build_unified_report(root: Path, sort_by: str = "project_name_asc") -> tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     concentrado_df, concentrado_warnings = build_concentrado(root)
     ghi_df, ghi_warnings = build_ghi_concentrado(root)
     metrics_df, temp_df, metrics_warnings = _build_metrics_tables(root)
@@ -889,6 +886,7 @@ def build_unified_report(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, List[s
     merged = _coalesce_project_name(merged)
     merged = _coalesce_coordinates(merged)
     merged = _build_temperature_for_installation(merged, temp_df)
+    merged = _sort_merged(merged, sort_by)
 
     warnings = sorted(set(concentrado_warnings + ghi_warnings + metrics_warnings))
     return merged, temp_df, warnings
@@ -898,11 +896,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Consolida extracción HelioScope en un solo archivo Excel.")
     parser.add_argument("--root", type=Path, default=Path("."), help="Carpeta raíz para buscar PDFs.")
     parser.add_argument("--out-prefix", type=str, default="helioscope_unificado", help="Prefijo del Excel de salida.")
+    parser.add_argument(
+        "--sort-by",
+        type=str,
+        default="project_name_asc",
+        choices=["project_name_asc", "project_name_desc", "pdf_path_asc", "none"],
+        help="Orden de filas en la hoja consolidado.",
+    )
     parser.add_argument("--json", action="store_true", help="Imprime resumen en JSON.")
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
-    merged_df, temp_df, warnings = build_unified_report(root)
+    merged_df, temp_df, warnings = build_unified_report(root, sort_by=args.sort_by)
     excel_path = root / f"{args.out_prefix}.xlsx"
 
     with pd.ExcelWriter(excel_path) as writer:
