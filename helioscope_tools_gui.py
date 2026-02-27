@@ -4,6 +4,7 @@
 Incluye:
 - Generar reporte unificado desde PDFs.
 - Unificar CSVs por subcarpeta en un solo XLSX.
+- Construir tabla de generación mensual por sitio desde XLSX unificado.
 """
 from __future__ import annotations
 
@@ -77,6 +78,28 @@ class HelioscopeToolsGUI:
         self.btn_run_csv.grid(row=1, column=1, sticky="ew")
         csv_frame.columnconfigure(0, weight=1)
 
+        monthly_frame = ttk.LabelFrame(main, text="3) Tabla mensual por sitio (XLSX unificado -> XLSX)", padding=10)
+        monthly_frame.pack(fill="x", pady=(10, 0))
+
+        self.monthly_input_var = tk.StringVar(value="P70 NREL.xlsx")
+        self.monthly_output_var = tk.StringVar(value="generacion_mensual_por_sitio.xlsx")
+
+        ttk.Label(monthly_frame, text="Archivo unificado de entrada (.xlsx):").grid(row=0, column=0, sticky="w")
+        ttk.Entry(monthly_frame, textvariable=self.monthly_input_var).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+
+        ttk.Label(monthly_frame, text="Archivo de salida (.xlsx):").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(monthly_frame, textvariable=self.monthly_output_var).grid(
+            row=3, column=0, sticky="ew", padx=(0, 8)
+        )
+
+        self.btn_run_monthly = ttk.Button(
+            monthly_frame,
+            text="Generar tabla mensual",
+            command=self._run_monthly_table,
+        )
+        self.btn_run_monthly.grid(row=3, column=1, sticky="ew")
+        monthly_frame.columnconfigure(0, weight=1)
+
         actions = ttk.Frame(main)
         actions.pack(fill="x", pady=(10, 0))
         self.btn_clear = ttk.Button(actions, text="Limpiar log", command=self._clear_log)
@@ -107,6 +130,7 @@ class HelioscopeToolsGUI:
         state = "disabled" if running else "normal"
         self.btn_run_unified.configure(state=state)
         self.btn_run_csv.configure(state=state)
+        self.btn_run_monthly.configure(state=state)
 
     def _validate_root(self) -> Path | None:
         root_path = Path(self.root_var.get()).expanduser().resolve()
@@ -152,6 +176,30 @@ class HelioscopeToolsGUI:
         output_path = (root_path / output_name).resolve()
         script = self.base_dir / "unificar_csvs_por_carpeta.py"
         cmd = [self.python_exe, str(script), "--root", str(root_path), "--output", str(output_path)]
+        self._start_command(cmd, root_path)
+
+    def _run_monthly_table(self) -> None:
+        root_path = self._validate_root()
+        if root_path is None:
+            return
+
+        input_name = self.monthly_input_var.get().strip()
+        output_name = self.monthly_output_var.get().strip()
+        if not input_name:
+            messagebox.showerror("Dato faltante", "Escribe el archivo XLSX unificado de entrada.")
+            return
+        if not output_name:
+            messagebox.showerror("Dato faltante", "Escribe el nombre del archivo XLSX de salida.")
+            return
+
+        input_path = (root_path / input_name).resolve()
+        if not input_path.exists() or not input_path.is_file():
+            messagebox.showerror("Archivo no encontrado", f"No existe el XLSX de entrada:\n{input_path}")
+            return
+
+        output_path = (root_path / output_name).resolve()
+        script = self.base_dir / "tabla_generacion_mensual.py"
+        cmd = [self.python_exe, str(script), "--input", str(input_path), "--output", str(output_path)]
         self._start_command(cmd, root_path)
 
     def _start_command(self, cmd: list[str], cwd: Path) -> None:
